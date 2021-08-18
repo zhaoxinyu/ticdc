@@ -66,8 +66,9 @@ type tablePipelineImpl struct {
 	markTableID int64
 	tableName   string // quoted schema and table, used in metircs only
 
-	sinkNode *sinkNode
-	cancel   context.CancelFunc
+	sinkNode   *sinkNode
+	pullerNode *pullerNode
+	cancel     context.CancelFunc
 }
 
 // TODO find a better name or avoid using an interface
@@ -81,7 +82,7 @@ type tableFlowController interface {
 
 // ResolvedTs returns the resolved ts in this table pipeline
 func (t *tablePipelineImpl) ResolvedTs() model.Ts {
-	return t.sinkNode.ResolvedTs()
+	return t.pullerNode.ResolvedTs()
 }
 
 // CheckpointTs returns the checkpoint ts in this table pipeline
@@ -189,7 +190,8 @@ func NewTablePipeline(ctx cdcContext.Context,
 		runnerSize++
 	}
 	p := pipeline.NewPipeline(ctx, 500*time.Millisecond, runnerSize, defaultOutputChannelSize)
-	p.AppendNode(ctx, "puller", newPullerNode(tableID, replicaInfo, tableName))
+	tablePipeline.pullerNode = newPullerNode(tableID, replicaInfo, tableName)
+	p.AppendNode(ctx, "puller", tablePipeline.pullerNode)
 	p.AppendNode(ctx, "sorter", newSorterNode(tableName, tableID, flowController, mounter))
 	if cyclicEnabled {
 		p.AppendNode(ctx, "cyclic", newCyclicMarkNode(replicaInfo.MarkTableID))
