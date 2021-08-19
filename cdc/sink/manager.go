@@ -234,6 +234,28 @@ func (b *bufferSink) run(ctx context.Context, errCh chan error) {
 	metricFlushDuration := flushRowChangedDuration.WithLabelValues(advertiseAddr, changefeedID, "Flush")
 	metricEmitRowDuration := flushRowChangedDuration.WithLabelValues(advertiseAddr, changefeedID, "EmitRow")
 	metricBufferSize := bufferChanSizeGauge.WithLabelValues(advertiseAddr, changefeedID)
+	metricsTimer := time.NewTimer(defaultMetricInterval)
+	defer metricsTimer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			err := ctx.Err()
+			if err != nil && errors.Cause(err) != context.Canceled {
+				errCh <- err
+			}
+			return
+		case <-metricsTimer.C:
+			metricBufferSize.Set(float64(len(b.buffer)))
+			metricsTimer.Reset(defaultMetricInterval)
+		default:
+		}
+		b.runOnce(ctx)
+	}
+}
+
+func (b *bufferSink) runOnce(ctx context.Context, errCh chan error) (
+	flushDuration, emitRowDuration time.Duration,
+) {
 	for {
 		select {
 		case <-ctx.Done():
