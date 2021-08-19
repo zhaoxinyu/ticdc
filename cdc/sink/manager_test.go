@@ -21,11 +21,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pingcap/errors"
-
 	"github.com/pingcap/check"
+	"github.com/pingcap/errors"
 	"github.com/pingcap/ticdc/cdc/model"
+	"github.com/pingcap/ticdc/cdc/sink/common"
 	"github.com/pingcap/ticdc/pkg/util/testleak"
+	"github.com/pingcap/tidb/store/tikv/oracle"
 )
 
 type managerSuite struct{}
@@ -84,12 +85,57 @@ func (c *checkSink) Barrier(ctx context.Context) error {
 	return nil
 }
 
+func (s *managerSuite) TestManagerAdvanceFlowControl(c *check.C) {
+	defer testleak.AfterTest(c)()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+
+	checkpointTs := uint64(oracle.EncodeTSO(time.Now().Unix() * 1000))
+	drawbackChan := make(chan drawbackMsg, 16)
+	fcStep := 1 * time.Second
+
+	upperBoundTime := oracle.GetTimeFromTS(checkpointTs).Add(fcStep)
+	fc := common.NewReactiveTsFlowControl(checkpointTs)
+	fc.Request(oracle.EncodeTSO(upperBoundTime.Unix() * 1000))
+	bsink := newBufferSink(ctx, &checkSink{C: c}, checkpointTs, drawbackChan, fc)
+	defer bsink.Close(ctx)
+
+	upperBoundTs := fc.GetConsumption()
+	c.Assert(upperBoundTs, check.Greater, checkpointTs)
+
+	// Must not advance upper bound if checkpoint unchanged.
+	timer := time.NewTimer(fcStep)
+	flushDuration, emitRowDuration, err := bsink.runOnce(context.Background(), timer, errCh, fcStep)
+	timer.Stop()
+	c.Assert(err, check.IsNil)
+	c.Assert(flushDuration, check.Equals, time.Duration(0))
+	c.Assert(emitRowDuration, check.Equals, time.Duration(0))
+	c.Assert(upperBoundTs, check.Equals, fc.GetConsumption())
+
+	// Advance resolved ts to checkpoint + 100ms
+	resolvedTs := uint64(oracle.EncodeTSO(time.Now().Add(fcStep).Unix() * 1000))
+	newCheckpintTs, err := bsink.FlushRowChangedEvents(ctx, resolvedTs)
+	// bufferSink does not advance checkpoint in FlushRowChangeEvents
+	c.Assert(newCheckpintTs, check.Equals, checkpointTs)
+	c.Assert(fc.GetConsumption(), check.Equals, upperBoundTs)
+
+	// bufferSink advances checkpoint in runOnce
+	flushDuration, emitRowDuration, err = bsink.runOnce(context.Background(), timer, errCh, fcStep)
+	c.Assert(err, check.IsNil)
+	c.Assert(upperBoundTs, check.Less, fc.GetConsumption())
+
+	checkpointTs, _ = bsink.FlushRowChangedEvents(ctx, resolvedTs)
+	upperBoundTs = fc.GetConsumption()
+	c.Assert(upperBoundTs, check.Greater, checkpointTs)
+}
+
 func (s *managerSuite) TestManagerRandom(c *check.C) {
 	defer testleak.AfterTest(c)()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := make(chan error, 16)
-	manager := NewManager(ctx, &checkSink{C: c}, errCh, 0)
+	manager, _ := NewManager(ctx, &checkSink{C: c}, errCh, 0)
 	defer manager.Close(ctx)
 	goroutineNum := 10
 	rowNum := 100
@@ -144,7 +190,7 @@ func (s *managerSuite) TestManagerAddRemoveTable(c *check.C) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := make(chan error, 16)
-	manager := NewManager(ctx, &checkSink{C: c}, errCh, 0)
+	manager, _ := NewManager(ctx, &checkSink{C: c}, errCh, 0)
 	defer manager.Close(ctx)
 	goroutineNum := 100
 	var wg sync.WaitGroup
@@ -226,7 +272,7 @@ func (s *managerSuite) TestManagerDestroyTableSink(c *check.C) {
 	defer cancel()
 
 	errCh := make(chan error, 16)
-	manager := NewManager(ctx, &checkSink{C: c}, errCh, 0)
+	manager, _ := NewManager(ctx, &checkSink{C: c}, errCh, 0)
 	defer manager.Close(ctx)
 
 	tableID := int64(49)
@@ -279,7 +325,7 @@ func (s *managerSuite) TestManagerError(c *check.C) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := make(chan error, 16)
-	manager := NewManager(ctx, &errorSink{C: c}, errCh, 0)
+	manager, _ := NewManager(ctx, &errorSink{C: c}, errCh, 0)
 	defer manager.Close(ctx)
 	sink := manager.CreateTableSink(1, 0)
 	err := sink.EmitRowChangedEvents(ctx, &model.RowChangedEvent{

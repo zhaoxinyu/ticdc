@@ -31,6 +31,7 @@ import (
 	tablepipeline "github.com/pingcap/ticdc/cdc/processor/pipeline"
 	"github.com/pingcap/ticdc/cdc/puller"
 	"github.com/pingcap/ticdc/cdc/sink"
+	"github.com/pingcap/ticdc/cdc/sink/common"
 	cdcContext "github.com/pingcap/ticdc/pkg/context"
 	"github.com/pingcap/ticdc/pkg/cyclic/mark"
 	cerror "github.com/pingcap/ticdc/pkg/errors"
@@ -62,6 +63,7 @@ type processor struct {
 	filter        *filter.Filter
 	mounter       entry.Mounter
 	sinkManager   *sink.Manager
+	flowControl   *common.ReactiveTsFlowControl
 
 	initialized bool
 	errCh       chan error
@@ -286,7 +288,7 @@ func (p *processor) lazyInitImpl(ctx cdcContext.Context) error {
 		return errors.Trace(err)
 	}
 	checkpointTs := p.changefeed.Info.GetCheckpointTs(p.changefeed.Status)
-	p.sinkManager = sink.NewManager(stdCtx, s, errCh, checkpointTs)
+	p.sinkManager, p.flowControl = sink.NewManager(stdCtx, s, errCh, checkpointTs)
 	p.initialized = true
 	log.Info("run processor", cdcContext.ZapFieldCapture(ctx), cdcContext.ZapFieldChangefeed(ctx))
 	return nil
@@ -726,6 +728,7 @@ func (p *processor) createTablePipelineImpl(ctx cdcContext.Context, tableID mode
 		tableNameStr,
 		replicaInfo,
 		sink,
+		p.flowControl,
 		p.changefeed.Info.GetTargetTs(),
 	)
 	p.wg.Add(1)
@@ -781,6 +784,7 @@ func (p *processor) Close() error {
 	ddlResolvedTsGauge.DeleteLabelValues(p.changefeedID, p.captureInfo.AdvertiseAddr)
 	processorErrorCounter.DeleteLabelValues(p.changefeedID, p.captureInfo.AdvertiseAddr)
 	if p.sinkManager != nil {
+		p.flowControl.Abort()
 		// pass a canceled context is ok here, since we don't need to wait Close
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()

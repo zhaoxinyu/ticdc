@@ -28,7 +28,7 @@ func goconsume(controller *TableTsFlowController, ts uint64) chan struct{} {
 	readyCh := make(chan struct{}, 1)
 	go func() {
 		readyCh <- struct{}{}
-		controller.Consume(ts, 1)
+		controller.Consume(ts, 1, dummyCallBack)
 		close(readyCh)
 	}()
 	select {
@@ -47,7 +47,7 @@ func (s *tsFlowControlSuite) TestTableTsFlowControlBasic(c *check.C) {
 	controller := NewTableTsFlowController(tsFlowControl)
 
 	for i := 0; i <= upperBound; i++ {
-		controller.Consume(uint64(i), 1)
+		controller.Consume(uint64(i), 1, dummyCallBack)
 	}
 
 	overUpperBound := uint64(upperBound) + 1

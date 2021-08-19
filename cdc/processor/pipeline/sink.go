@@ -67,6 +67,7 @@ type sinkNode struct {
 	sink   sink.Sink
 	status TableStatus
 
+	tableID      model.TableID
 	resolvedTs   model.Ts
 	checkpointTs model.Ts
 	targetTs     model.Ts
@@ -78,7 +79,7 @@ type sinkNode struct {
 	flowController tableFlowController
 }
 
-func newSinkNode(sink sink.Sink, startTs model.Ts, targetTs model.Ts, flowController tableFlowController) *sinkNode {
+func newSinkNode(sink sink.Sink, startTs model.Ts, targetTs model.Ts, tableID model.TableID) *sinkNode {
 	return &sinkNode{
 		sink:         sink,
 		status:       TableStatusInitializing,
@@ -86,8 +87,7 @@ func newSinkNode(sink sink.Sink, startTs model.Ts, targetTs model.Ts, flowContro
 		resolvedTs:   startTs,
 		checkpointTs: startTs,
 		barrierTs:    startTs,
-
-		flowController: flowController,
+		tableID:      tableID,
 	}
 }
 
@@ -123,9 +123,14 @@ func (n *sinkNode) flushSink(ctx pipeline.NodeContext, resolvedTs model.Ts) (err
 			err = n.stop(ctx)
 		}
 	}()
-	if resolvedTs > n.barrierTs {
-		resolvedTs = n.barrierTs
-	}
+	log.Debug("sinkNode flushSink",
+		zap.Uint64("resolvedTs", resolvedTs),
+		zap.Uint64("barrierTs", n.barrierTs),
+		zap.Uint64("checkpointTs", n.checkpointTs),
+		zap.Uint64("tableID", uint64(n.tableID)))
+	// if resolvedTs > n.barrierTs {
+	// 	resolvedTs = n.barrierTs
+	// }
 	if resolvedTs > n.targetTs {
 		resolvedTs = n.targetTs
 	}
@@ -144,7 +149,6 @@ func (n *sinkNode) flushSink(ctx pipeline.NodeContext, resolvedTs model.Ts) (err
 	}
 	atomic.StoreUint64(&n.checkpointTs, checkpointTs)
 
-	n.flowController.Release(checkpointTs)
 	return nil
 }
 
@@ -324,6 +328,5 @@ func (n *sinkNode) Receive(ctx pipeline.NodeContext) error {
 
 func (n *sinkNode) Destroy(ctx pipeline.NodeContext) error {
 	n.status.Store(TableStatusStopped)
-	n.flowController.Abort()
 	return n.sink.Close(ctx)
 }

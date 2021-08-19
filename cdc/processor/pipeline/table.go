@@ -22,7 +22,6 @@ import (
 	"github.com/pingcap/ticdc/cdc/model"
 	"github.com/pingcap/ticdc/cdc/sink"
 	"github.com/pingcap/ticdc/cdc/sink/common"
-	serverConfig "github.com/pingcap/ticdc/pkg/config"
 	cdcContext "github.com/pingcap/ticdc/pkg/context"
 	cerror "github.com/pingcap/ticdc/pkg/errors"
 	"github.com/pingcap/ticdc/pkg/pipeline"
@@ -74,9 +73,7 @@ type tablePipelineImpl struct {
 // TODO find a better name or avoid using an interface
 // We use an interface here for ease in unit testing.
 type tableFlowController interface {
-	Consume(commitTs uint64, size uint64) error
-	Release(resolvedTs uint64)
-	Abort()
+	Consume(commitTs uint64, size uint64, onBlock func() error) error
 	GetConsumption() uint64
 }
 
@@ -167,6 +164,7 @@ func NewTablePipeline(ctx cdcContext.Context,
 	tableName string,
 	replicaInfo *model.TableReplicaInfo,
 	sink sink.Sink,
+	flowControl *common.ReactiveTsFlowControl,
 	targetTs model.Ts) TablePipeline {
 	ctx, cancel := cdcContext.WithCancel(ctx)
 	tablePipeline := &tablePipelineImpl{
@@ -176,13 +174,7 @@ func NewTablePipeline(ctx cdcContext.Context,
 		cancel:      cancel,
 	}
 
-	perTableMemoryQuota := serverConfig.GetGlobalServerConfig().PerTableMemoryQuota
-	log.Debug("creating table flow controller",
-		zap.String("changefeed-id", ctx.ChangefeedVars().ID),
-		zap.String("table-name", tableName),
-		zap.Int64("table-id", tableID),
-		zap.Uint64("quota", perTableMemoryQuota))
-	flowController := common.NewTableFlowController(perTableMemoryQuota)
+	flowController := common.NewTableTsFlowController(flowControl)
 	config := ctx.ChangefeedVars().Info.Config
 	cyclicEnabled := config.Cyclic != nil && config.Cyclic.IsEnabled()
 	runnerSize := defaultRunnersSize
@@ -196,7 +188,7 @@ func NewTablePipeline(ctx cdcContext.Context,
 	if cyclicEnabled {
 		p.AppendNode(ctx, "cyclic", newCyclicMarkNode(replicaInfo.MarkTableID))
 	}
-	tablePipeline.sinkNode = newSinkNode(sink, replicaInfo.StartTs, targetTs, flowController)
+	tablePipeline.sinkNode = newSinkNode(sink, replicaInfo.StartTs, targetTs, tableID)
 	p.AppendNode(ctx, "sink", tablePipeline.sinkNode)
 	tablePipeline.p = p
 	return tablePipeline

@@ -87,14 +87,6 @@ func (n *sorterNode) Init(ctx pipeline.NodeContext) error {
 		return nil
 	})
 	n.wg.Go(func() error {
-		// Since the flowController is implemented by `Cond`, it is not cancelable
-		// by a context. We need to listen on cancellation and aborts the flowController
-		// manually.
-		<-stdCtx.Done()
-		n.flowController.Abort()
-		return nil
-	})
-	n.wg.Go(func() error {
 		lastSentResolvedTs := uint64(0)
 		lastSendResolvedTsTime := time.Now() // the time at which we last sent a resolved-ts.
 		lastCRTs := uint64(0)                // the commit-ts of the last row changed we sent.
@@ -136,13 +128,18 @@ func (n *sorterNode) Init(ctx pipeline.NodeContext) error {
 					// NOTE we allow the quota to be exceeded if blocking means interrupting a transaction.
 					// Otherwise the pipeline would deadlock.
 					err := n.flowController.Consume(commitTs, size, func() error {
-						if lastCRTs > lastSentResolvedTs {
-							// If we are blocking, we send a Resolved Event here to elicit a sink-flush.
-							// Not sending a Resolved Event here will very likely deadlock the pipeline.
-							lastSentResolvedTs = lastCRTs
-							lastSendResolvedTsTime = time.Now()
-							ctx.SendToNextNode(pipeline.PolymorphicEventMessage(model.NewResolvedPolymorphicEvent(0, lastCRTs)))
+						log.Debug("sorter blocking",
+							zap.Uint64("commitTs", commitTs),
+							zap.Uint64("lastCRTs", lastCRTs),
+							zap.Uint64("tableID", uint64(n.tableID)))
+						if commitTs > lastCRTs {
+							lastCRTs = commitTs - 1
 						}
+						// If we are blocking, we send a Resolved Event here to elicit a sink-flush.
+						// Not sending a Resolved Event here will very likely deadlock the pipeline.
+						lastSentResolvedTs = lastCRTs
+						lastSendResolvedTsTime = time.Now()
+						ctx.SendToNextNode(pipeline.PolymorphicEventMessage(model.NewResolvedPolymorphicEvent(0, lastCRTs)))
 						return nil
 					})
 					if err != nil {

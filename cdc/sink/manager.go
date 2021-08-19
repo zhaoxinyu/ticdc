@@ -24,7 +24,9 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
 	"github.com/pingcap/ticdc/cdc/model"
+	"github.com/pingcap/ticdc/cdc/sink/common"
 	"github.com/pingcap/ticdc/pkg/util"
+	"github.com/pingcap/tidb/store/tikv/oracle"
 	"go.uber.org/zap"
 )
 
@@ -34,7 +36,7 @@ const (
 
 // Manager manages table sinks, maintains the relationship between table sinks and backendSink
 type Manager struct {
-	backendSink  Sink
+	bsink        *bufferSink
 	checkpointTs model.Ts
 	tableSinks   map[model.TableID]*tableSink
 	tableSinksMu sync.Mutex
@@ -46,14 +48,23 @@ type Manager struct {
 }
 
 // NewManager creates a new Sink manager
-func NewManager(ctx context.Context, backendSink Sink, errCh chan error, checkpointTs model.Ts) *Manager {
+func NewManager(ctx context.Context, backendSink Sink, errCh chan error, checkpointTs model.Ts) (*Manager, *common.ReactiveTsFlowControl) {
 	drawbackChan := make(chan drawbackMsg, 16)
+
+	const tsFlowControlStep = time.Minute
+	flowControl := common.NewReactiveTsFlowControl(checkpointTs)
+	newCheckpointTime := oracle.GetTimeFromTS(checkpointTs)
+	upperBoundTime := newCheckpointTime.Add(tsFlowControlStep)
+	flowControl.Request(oracle.EncodeTSO(upperBoundTime.Unix() * 1000))
+	bsink := newBufferSink(ctx, backendSink, checkpointTs, drawbackChan, flowControl)
+	go bsink.run(ctx, errCh, tsFlowControlStep)
+
 	return &Manager{
-		backendSink:  newBufferSink(ctx, backendSink, errCh, checkpointTs, drawbackChan),
+		bsink:        bsink,
 		checkpointTs: checkpointTs,
 		tableSinks:   make(map[model.TableID]*tableSink),
 		drawbackChan: drawbackChan,
-	}
+	}, flowControl
 }
 
 // CreateTableSink creates a table sink
@@ -75,26 +86,28 @@ func (m *Manager) CreateTableSink(tableID model.TableID, checkpointTs model.Ts) 
 
 // Close closes the Sink manager and backend Sink, this method can be reentrantly called
 func (m *Manager) Close(ctx context.Context) error {
-	return m.backendSink.Close(ctx)
+	return m.bsink.Close(ctx)
 }
 
-func (m *Manager) getMinEmittedTs() model.Ts {
+func (m *Manager) getMinEmittedTs() (model.Ts, uint64) {
 	m.tableSinksMu.Lock()
 	defer m.tableSinksMu.Unlock()
 	if len(m.tableSinks) == 0 {
-		return m.getCheckpointTs()
+		return m.getCheckpointTs(), 0
 	}
 	minTs := model.Ts(math.MaxUint64)
-	for _, tableSink := range m.tableSinks {
+	minTable := int64(0)
+	for tableID, tableSink := range m.tableSinks {
 		emittedTs := tableSink.getEmittedTs()
 		if minTs > emittedTs {
 			minTs = emittedTs
+			minTable = tableID
 		}
 	}
-	return minTs
+	return minTs, uint64(minTable)
 }
 
-func (m *Manager) flushBackendSink(ctx context.Context) (model.Ts, error) {
+func (m *Manager) flushBackendSink(ctx context.Context, tableID uint64) (model.Ts, error) {
 	if !atomic.CompareAndSwapInt64(&m.flushing, 0, 1) {
 		return atomic.LoadUint64(&m.checkpointTs), nil
 	}
@@ -103,8 +116,12 @@ func (m *Manager) flushBackendSink(ctx context.Context) (model.Ts, error) {
 		m.flushMu.Unlock()
 		atomic.StoreInt64(&m.flushing, 0)
 	}()
-	minEmittedTs := m.getMinEmittedTs()
-	checkpointTs, err := m.backendSink.FlushRowChangedEvents(ctx, minEmittedTs)
+	minEmittedTs, minTableID := m.getMinEmittedTs()
+	log.Debug("manager flushBackendSink",
+		zap.Uint64("resolvedTs", minEmittedTs),
+		zap.Uint64("tableID", tableID),
+		zap.Uint64("minTableID", uint64(minTableID)))
+	checkpointTs, err := m.bsink.FlushRowChangedEvents(ctx, minEmittedTs)
 	if err != nil {
 		return m.getCheckpointTs(), errors.Trace(err)
 	}
@@ -127,7 +144,7 @@ func (m *Manager) destroyTableSink(ctx context.Context, tableID model.TableID) e
 		return ctx.Err()
 	case <-callback:
 	}
-	return m.backendSink.Barrier(ctx)
+	return m.bsink.Barrier(ctx)
 }
 
 func (m *Manager) getCheckpointTs() uint64 {
@@ -163,17 +180,17 @@ func (t *tableSink) FlushRowChangedEvents(ctx context.Context, resolvedTs uint64
 	})
 	if i == 0 {
 		atomic.StoreUint64(&t.emittedTs, resolvedTs)
-		return t.manager.flushBackendSink(ctx)
+		return t.manager.flushBackendSink(ctx, uint64(t.tableID))
 	}
 	resolvedRows := t.buffer[:i]
 	t.buffer = append(make([]*model.RowChangedEvent, 0, len(t.buffer[i:])), t.buffer[i:]...)
 
-	err := t.manager.backendSink.EmitRowChangedEvents(ctx, resolvedRows...)
+	err := t.manager.bsink.EmitRowChangedEvents(ctx, resolvedRows...)
 	if err != nil {
 		return t.manager.getCheckpointTs(), errors.Trace(err)
 	}
 	atomic.StoreUint64(&t.emittedTs, resolvedTs)
-	return t.manager.flushBackendSink(ctx)
+	return t.manager.flushBackendSink(ctx, uint64(t.tableID))
 }
 
 func (t *tableSink) getEmittedTs() uint64 {
@@ -207,28 +224,28 @@ type bufferSink struct {
 	bufferMu     sync.Mutex
 	flushTsChan  chan uint64
 	drawbackChan chan drawbackMsg
+	flowControl  *common.ReactiveTsFlowControl
 }
 
 func newBufferSink(
 	ctx context.Context,
 	backendSink Sink,
-	errCh chan error,
 	checkpointTs model.Ts,
 	drawbackChan chan drawbackMsg,
-) Sink {
-	sink := &bufferSink{
+	flowControl *common.ReactiveTsFlowControl,
+) *bufferSink {
+	return &bufferSink{
 		Sink: backendSink,
 		// buffer shares the same flow control with table sink
 		buffer:       make(map[model.TableID][]*model.RowChangedEvent),
 		checkpointTs: checkpointTs,
 		flushTsChan:  make(chan uint64, 128),
 		drawbackChan: drawbackChan,
+		flowControl:  flowControl,
 	}
-	go sink.run(ctx, errCh)
-	return sink
 }
 
-func (b *bufferSink) run(ctx context.Context, errCh chan error) {
+func (b *bufferSink) run(ctx context.Context, errCh chan error, flowControlStep time.Duration) {
 	changefeedID := util.ChangefeedIDFromCtx(ctx)
 	advertiseAddr := util.CaptureAddrFromCtx(ctx)
 	metricFlushDuration := flushRowChangedDuration.WithLabelValues(advertiseAddr, changefeedID, "Flush")
@@ -236,85 +253,111 @@ func (b *bufferSink) run(ctx context.Context, errCh chan error) {
 	metricBufferSize := bufferChanSizeGauge.WithLabelValues(advertiseAddr, changefeedID)
 	metricsTimer := time.NewTimer(defaultMetricInterval)
 	defer metricsTimer.Stop()
+	fcTimer := time.NewTimer(flowControlStep / 10)
+	defer fcTimer.Stop()
+
 	for {
 		select {
-		case <-ctx.Done():
-			err := ctx.Err()
-			if err != nil && errors.Cause(err) != context.Canceled {
-				errCh <- err
-			}
-			return
 		case <-metricsTimer.C:
 			metricBufferSize.Set(float64(len(b.buffer)))
 			metricsTimer.Reset(defaultMetricInterval)
 		default:
 		}
-		b.runOnce(ctx)
+		flushDuration, emitRowDuration, err := b.runOnce(ctx, fcTimer, errCh, flowControlStep)
+		if err != nil && errors.Cause(err) != context.Canceled {
+			errCh <- err
+			return
+		}
+		if flushDuration != 0 {
+			metricFlushDuration.Observe(flushDuration.Seconds())
+		}
+		if emitRowDuration != 0 {
+			metricEmitRowDuration.Observe(emitRowDuration.Seconds())
+		}
 	}
 }
 
-func (b *bufferSink) runOnce(ctx context.Context, errCh chan error) (
-	flushDuration, emitRowDuration time.Duration,
+func (b *bufferSink) runOnce(
+	ctx context.Context, fcTimer *time.Timer, errCh chan error, flowControlStep time.Duration,
+) (
+	flushDuration, emitRowDuration time.Duration, err error,
 ) {
-	for {
-		select {
-		case <-ctx.Done():
-			err := ctx.Err()
-			if err != nil && errors.Cause(err) != context.Canceled {
-				errCh <- err
-			}
-			return
-		case drawback := <-b.drawbackChan:
-			b.bufferMu.Lock()
-			delete(b.buffer, drawback.tableID)
-			b.bufferMu.Unlock()
-			close(drawback.callback)
-		case resolvedTs := <-b.flushTsChan:
-			b.bufferMu.Lock()
-			// find all rows before resolvedTs and emit to backend sink
-			for tableID, rows := range b.buffer {
-				i := sort.Search(len(rows), func(i int) bool {
-					return rows[i].CommitTs > resolvedTs
-				})
-
-				start := time.Now()
-				err := b.Sink.EmitRowChangedEvents(ctx, rows[:i]...)
-				if err != nil {
-					b.bufferMu.Unlock()
-					if errors.Cause(err) != context.Canceled {
-						errCh <- err
-					}
-					return
-				}
-				dur := time.Since(start)
-				metricEmitRowDuration.Observe(dur.Seconds())
-
-				// put remaining rows back to buffer
-				// append to a new, fixed slice to avoid lazy GC
-				b.buffer[tableID] = append(make([]*model.RowChangedEvent, 0, len(rows[i:])), rows[i:]...)
-			}
-			b.bufferMu.Unlock()
+	select {
+	case <-ctx.Done():
+		err = ctx.Err()
+		return
+	case drawback := <-b.drawbackChan:
+		b.bufferMu.Lock()
+		delete(b.buffer, drawback.tableID)
+		b.bufferMu.Unlock()
+		close(drawback.callback)
+	case <-fcTimer.C:
+		checkpointTs := atomic.LoadUint64(&b.checkpointTs)
+		upperBoundTime := oracle.GetTimeFromTS(checkpointTs).Add(flowControlStep)
+		b.flowControl.Request(oracle.EncodeTSO(upperBoundTime.Unix() * 1000))
+		fcTimer.Reset(flowControlStep / 10)
+		log.Info("bufferSink fcTimer",
+			zap.Uint64("checkpointTs", checkpointTs),
+			zap.Uint64("upperBound", b.flowControl.GetConsumption()))
+	case resolvedTs := <-b.flushTsChan:
+		b.bufferMu.Lock()
+		// find all rows before resolvedTs and emit to backend sink
+		for tableID, rows := range b.buffer {
+			i := sort.Search(len(rows), func(i int) bool {
+				return rows[i].CommitTs > resolvedTs
+			})
 
 			start := time.Now()
-			checkpointTs, err := b.Sink.FlushRowChangedEvents(ctx, resolvedTs)
+			err = b.Sink.EmitRowChangedEvents(ctx, rows[:i]...)
 			if err != nil {
-				if errors.Cause(err) != context.Canceled {
-					errCh <- err
-				}
+				b.bufferMu.Unlock()
 				return
 			}
-			atomic.StoreUint64(&b.checkpointTs, checkpointTs)
+			emitRowDuration = time.Since(start)
 
-			dur := time.Since(start)
-			metricFlushDuration.Observe(dur.Seconds())
-			if dur > 3*time.Second {
-				log.Warn("flush row changed events too slow",
-					zap.Duration("duration", dur), util.ZapFieldChangefeed(ctx))
-			}
-		case <-time.After(defaultMetricInterval):
-			metricBufferSize.Set(float64(len(b.buffer)))
+			// put remaining rows back to buffer
+			// append to a new, fixed slice to avoid lazy GC
+			b.buffer[tableID] = append(make([]*model.RowChangedEvent, 0, len(rows[i:])), rows[i:]...)
 		}
+		b.bufferMu.Unlock()
+
+		start := time.Now()
+		var checkpointTs uint64
+		checkpointTs, err = b.Sink.FlushRowChangedEvents(ctx, resolvedTs)
+		if err != nil {
+			return
+		}
+		oldCheckpointTs := atomic.SwapUint64(&b.checkpointTs, checkpointTs)
+		if oldCheckpointTs > checkpointTs {
+			if checkpointTs != 0 {
+				log.Panic("checkpoint regression",
+					zap.Uint64("old", oldCheckpointTs),
+					zap.Uint64("new", checkpointTs))
+			}
+			checkpointTs = oldCheckpointTs
+		}
+		oldCheckpointTime := oracle.GetTimeFromTS(oldCheckpointTs)
+		newCheckpointTime := oracle.GetTimeFromTS(checkpointTs)
+		oldUpperBound := b.flowControl.GetConsumption()
+		if newCheckpointTime.Sub(oldCheckpointTime) > 0 {
+			upperBoundTime := newCheckpointTime.Add(flowControlStep)
+			b.flowControl.Request(oracle.EncodeTSO(upperBoundTime.Unix() * 1000))
+		}
+
+		log.Debug("bufferSink resolvedTs",
+			zap.Uint64("oldCheckpointTs", oldCheckpointTs),
+			zap.Uint64("checkpointTs", checkpointTs),
+			zap.Uint64("oldUpperBound", oldUpperBound),
+			zap.Uint64("upperBound", b.flowControl.GetConsumption()))
+
+		flushDuration = time.Since(start)
+		if flushDuration > 3*time.Second {
+			log.Warn("flush row changed events too slow",
+				zap.Duration("duration", flushDuration), util.ZapFieldChangefeed(ctx))
+		}
+
 	}
+	return
 }
 
 func (b *bufferSink) EmitRowChangedEvents(ctx context.Context, rows ...*model.RowChangedEvent) error {

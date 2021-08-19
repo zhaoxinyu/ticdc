@@ -48,7 +48,7 @@ func NewReactiveTsFlowControl(upperBound uint64) *ReactiveTsFlowControl {
 // block until enough memory has been freed up by Release.
 // blockCallBack will be called if the function will block.
 // Should be used with care to prevent deadlock.
-func (c *ReactiveTsFlowControl) ConsumeWithBlocking(ts uint64) error {
+func (c *ReactiveTsFlowControl) ConsumeWithBlocking(ts uint64, onBlock func() error) error {
 	if ts > atomic.LoadUint64(&c.upperBound) {
 	}
 
@@ -63,6 +63,9 @@ func (c *ReactiveTsFlowControl) ConsumeWithBlocking(ts uint64) error {
 		if ts <= atomic.LoadUint64(&c.upperBound) {
 			// It's within the upper bound.
 			break
+		} else if onBlock != nil {
+			onBlock()
+			onBlock = nil
 		}
 		c.cond.Wait()
 	}
@@ -116,7 +119,7 @@ func NewTableTsFlowController(tsFlowControl *ReactiveTsFlowControl) *TableTsFlow
 
 // Consume is called when an event has arrived for being processed by the sink.
 // It will handle transaction boundaries automatically, and will not block intra-transaction.
-func (c *TableTsFlowController) Consume(commitTs uint64, size uint64) error {
+func (c *TableTsFlowController) Consume(commitTs uint64, size uint64, onBlock func() error) error {
 	lastCommitTs := atomic.LoadUint64(&c.lastCommitTs)
 
 	if commitTs < lastCommitTs {
@@ -128,7 +131,7 @@ func (c *TableTsFlowController) Consume(commitTs uint64, size uint64) error {
 	if commitTs > lastCommitTs {
 		atomic.StoreUint64(&c.lastCommitTs, commitTs)
 	}
-	err := c.tsFlowControl.ConsumeWithBlocking(commitTs)
+	err := c.tsFlowControl.ConsumeWithBlocking(commitTs, onBlock)
 	if err != nil {
 		return errors.Trace(err)
 	}
