@@ -128,12 +128,17 @@ func (c *TableTsFlowController) Consume(commitTs uint64, size uint64, onBlock fu
 			zap.Uint64("lastCommitTs", c.lastCommitTs))
 	}
 
+	// Here commitTs == lastCommitTs, which means that we are not crossing
+	// a transaction boundary. In this situation, we use `ForceConsume` because
+	// blocking the event stream mid-transaction is highly likely to cause
+	// a deadlock.
+	// TODO fix this in the future, after we figure out how to elegantly support large txns.
 	if commitTs > lastCommitTs {
 		atomic.StoreUint64(&c.lastCommitTs, commitTs)
-	}
-	err := c.tsFlowControl.ConsumeWithBlocking(commitTs, onBlock)
-	if err != nil {
-		return errors.Trace(err)
+		err := c.tsFlowControl.ConsumeWithBlocking(commitTs, onBlock)
+		if err != nil {
+			return errors.Trace(err)
+		}
 	}
 
 	return nil

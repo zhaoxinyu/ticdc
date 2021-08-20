@@ -136,31 +136,35 @@ func (n *sorterNode) Init(ctx pipeline.NodeContext) error {
 							ctx.SendToNextNode(pipeline.PolymorphicEventMessage(model.NewResolvedPolymorphicEvent(0, lastCRTs)))
 						}
 					}
-					// NOTE we allow the quota to be exceeded if blocking means interrupting a transaction.
-					// Otherwise the pipeline would deadlock.
-					err := n.flowController.Consume(commitTs, size, func() error {
-						log.Debug("sorter blocking",
-							zap.Uint64("commitTs", commitTs),
-							zap.Uint64("lastCRTs", lastCRTs),
-							zap.Uint64("tableID", uint64(n.tableID)))
-						if lastCRTs > lastSentResolvedTs {
-							// If we are blocking, we send a Resolved Event here to elicit a sink-flush.
-							// Not sending a Resolved Event here will very likely deadlock the pipeline.
-							lastSentResolvedTs = lastCRTs
-							lastSendResolvedTsTime = time.Now()
-							ctx.SendToNextNode(pipeline.PolymorphicEventMessage(model.NewResolvedPolymorphicEvent(0, lastCRTs)))
+					// It must send at least one message, only then can it be
+					// flow controlled.
+					if lastCRTs != 0 || lastSentResolvedTs != 0 {
+						// NOTE we allow the quota to be exceeded if blocking means interrupting a transaction.
+						// Otherwise the pipeline would deadlock.
+						err := n.flowController.Consume(commitTs, size, func() error {
+							log.Debug("sorter blocking",
+								zap.Uint64("commitTs", commitTs),
+								zap.Uint64("lastCRTs", lastCRTs),
+								zap.Uint64("tableID", uint64(n.tableID)))
+							if lastCRTs > lastSentResolvedTs {
+								// If we are blocking, we send a Resolved Event here to elicit a sink-flush.
+								// Not sending a Resolved Event here will very likely deadlock the pipeline.
+								lastSentResolvedTs = lastCRTs
+								lastSendResolvedTsTime = time.Now()
+								ctx.SendToNextNode(pipeline.PolymorphicEventMessage(model.NewResolvedPolymorphicEvent(0, lastCRTs)))
+							}
+							return nil
+						})
+						if err != nil {
+							if cerror.ErrFlowControllerAborted.Equal(err) {
+								log.Info("flow control cancelled for table",
+									zap.Int64("tableID", n.tableID),
+									zap.String("tableName", n.tableName))
+							} else {
+								ctx.Throw(err)
+							}
+							return nil
 						}
-						return nil
-					})
-					if err != nil {
-						if cerror.ErrFlowControllerAborted.Equal(err) {
-							log.Info("flow control cancelled for table",
-								zap.Int64("tableID", n.tableID),
-								zap.String("tableName", n.tableName))
-						} else {
-							ctx.Throw(err)
-						}
-						return nil
 					}
 					lastCRTs = commitTs
 
