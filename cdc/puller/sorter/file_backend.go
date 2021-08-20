@@ -237,11 +237,9 @@ func (r *fileBackEndReader) readNext() (*model.PolymorphicEvent, error) {
 		return nil, errors.Trace(wrapIOError(err))
 	}
 
-	if cap(r.rawBytesBuf) < int(size) {
-		r.rawBytesBuf = make([]byte, size)
-	} else {
-		r.rawBytesBuf = r.rawBytesBuf[:size]
-	}
+	r.rawBytesBuf = make([]byte, size)
+	// Do not hog memory.
+	defer func() { r.rawBytesBuf = nil }()
 
 	// short reads are possible with bufio, hence the need for io.ReadFull
 	n, err := io.ReadFull(r.reader, r.rawBytesBuf)

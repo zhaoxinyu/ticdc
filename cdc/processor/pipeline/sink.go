@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	defaultSyncResolvedBatch = 1024
+	defaultSyncResolvedBatch = 64
 )
 
 // TableStatus is status of the table pipeline
@@ -273,6 +273,13 @@ func (n *sinkNode) flushRow2Sink(ctx pipeline.NodeContext) error {
 	err := n.sink.EmitRowChangedEvents(ctx, n.rowBuffer...)
 	if err != nil {
 		return errors.Trace(err)
+	}
+	// Do not hog memory.
+	for i := range n.rowBuffer {
+		n.rowBuffer[i] = nil
+	}
+	for i := range n.eventBuffer {
+		n.eventBuffer[i] = nil
 	}
 	n.rowBuffer = n.rowBuffer[:0]
 	n.eventBuffer = n.eventBuffer[:0]
