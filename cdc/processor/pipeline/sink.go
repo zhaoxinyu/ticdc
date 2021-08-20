@@ -128,9 +128,9 @@ func (n *sinkNode) flushSink(ctx pipeline.NodeContext, resolvedTs model.Ts) (err
 		zap.Uint64("barrierTs", n.barrierTs),
 		zap.Uint64("checkpointTs", n.checkpointTs),
 		zap.Uint64("tableID", uint64(n.tableID)))
-	// if resolvedTs > n.barrierTs {
-	// 	resolvedTs = n.barrierTs
-	// }
+	if resolvedTs > n.barrierTs {
+		resolvedTs = n.barrierTs
+	}
 	if resolvedTs > n.targetTs {
 		resolvedTs = n.targetTs
 	}

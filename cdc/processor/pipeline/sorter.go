@@ -44,16 +44,20 @@ type sorterNode struct {
 
 	mounter entry.Mounter
 
+	barrierUpToDate   int64
+	barrierUpToDateCh chan struct{}
+
 	wg     errgroup.Group
 	cancel context.CancelFunc
 }
 
 func newSorterNode(tableName string, tableID model.TableID, flowController tableFlowController, mounter entry.Mounter) pipeline.Node {
 	return &sorterNode{
-		tableName:      tableName,
-		tableID:        tableID,
-		flowController: flowController,
-		mounter:        mounter,
+		tableName:         tableName,
+		tableID:           tableID,
+		flowController:    flowController,
+		mounter:           mounter,
+		barrierUpToDateCh: make(chan struct{}),
 	}
 }
 
@@ -87,6 +91,13 @@ func (n *sorterNode) Init(ctx pipeline.NodeContext) error {
 		return nil
 	})
 	n.wg.Go(func() error {
+		// Wait barrier up to date
+		select {
+		case <-stdCtx.Done():
+			return nil
+		case <-n.barrierUpToDateCh:
+		}
+
 		lastSentResolvedTs := uint64(0)
 		lastSendResolvedTsTime := time.Now() // the time at which we last sent a resolved-ts.
 		lastCRTs := uint64(0)                // the commit-ts of the last row changed we sent.
@@ -132,14 +143,13 @@ func (n *sorterNode) Init(ctx pipeline.NodeContext) error {
 							zap.Uint64("commitTs", commitTs),
 							zap.Uint64("lastCRTs", lastCRTs),
 							zap.Uint64("tableID", uint64(n.tableID)))
-						if commitTs > lastCRTs {
-							lastCRTs = commitTs - 1
+						if lastCRTs > lastSentResolvedTs {
+							// If we are blocking, we send a Resolved Event here to elicit a sink-flush.
+							// Not sending a Resolved Event here will very likely deadlock the pipeline.
+							lastSentResolvedTs = lastCRTs
+							lastSendResolvedTsTime = time.Now()
+							ctx.SendToNextNode(pipeline.PolymorphicEventMessage(model.NewResolvedPolymorphicEvent(0, lastCRTs)))
 						}
-						// If we are blocking, we send a Resolved Event here to elicit a sink-flush.
-						// Not sending a Resolved Event here will very likely deadlock the pipeline.
-						lastSentResolvedTs = lastCRTs
-						lastSendResolvedTsTime = time.Now()
-						ctx.SendToNextNode(pipeline.PolymorphicEventMessage(model.NewResolvedPolymorphicEvent(0, lastCRTs)))
 						return nil
 					})
 					if err != nil {
@@ -180,12 +190,25 @@ func (n *sorterNode) Init(ctx pipeline.NodeContext) error {
 
 // Receive receives the message from the previous node
 func (n *sorterNode) Receive(ctx pipeline.NodeContext) error {
+	barrierUpToDate := false
 	msg := ctx.Message()
 	switch msg.Tp {
 	case pipeline.MessageTypePolymorphicEvent:
 		n.sorter.AddEntry(ctx, msg.PolymorphicEvent)
+	case pipeline.MessageTypeBarrier:
+		if n.barrierUpToDate == 0 {
+			// Barrier has advanced.
+			if msg.BarrierTs > n.flowController.GetConsumption() {
+				n.barrierUpToDate = 1
+				barrierUpToDate = true
+			}
+		}
+		fallthrough
 	default:
 		ctx.SendToNextNode(msg)
+		if barrierUpToDate {
+			close(n.barrierUpToDateCh)
+		}
 	}
 	return nil
 }
