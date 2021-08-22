@@ -113,7 +113,7 @@ func (n *sinkNode) stop(ctx pipeline.NodeContext) (err error) {
 	return
 }
 
-func (n *sinkNode) flushSink(ctx pipeline.NodeContext, resolvedTs model.Ts) (err error) {
+func (n *sinkNode) flushSink(ctx pipeline.NodeContext, resolvedTs model.Ts, verbose bool) (err error) {
 	defer func() {
 		if err != nil {
 			n.status.Store(TableStatusStopped)
@@ -123,11 +123,13 @@ func (n *sinkNode) flushSink(ctx pipeline.NodeContext, resolvedTs model.Ts) (err
 			err = n.stop(ctx)
 		}
 	}()
-	log.Debug("sinkNode flushSink",
-		zap.Uint64("resolvedTs", resolvedTs),
-		zap.Uint64("barrierTs", n.barrierTs),
-		zap.Uint64("checkpointTs", n.checkpointTs),
-		zap.Uint64("tableID", uint64(n.tableID)))
+	if verbose {
+		log.Info("sinkNode flushSink",
+			zap.Uint64("resolvedTs", resolvedTs),
+			zap.Uint64("barrierTs", n.barrierTs),
+			zap.Uint64("checkpointTs", n.checkpointTs),
+			zap.Uint64("tableID", uint64(n.tableID)))
+	}
 	if resolvedTs > n.barrierTs {
 		resolvedTs = n.barrierTs
 	}
@@ -302,7 +304,7 @@ func (n *sinkNode) Receive(ctx pipeline.NodeContext) error {
 			failpoint.Inject("ProcessorSyncResolvedError", func() {
 				failpoint.Return(errors.New("processor sync resolved injected error"))
 			})
-			if err := n.flushSink(ctx, msg.PolymorphicEvent.CRTs); err != nil {
+			if err := n.flushSink(ctx, msg.PolymorphicEvent.CRTs, true); err != nil {
 				return errors.Trace(err)
 			}
 			atomic.StoreUint64(&n.resolvedTs, msg.PolymorphicEvent.CRTs)
@@ -312,7 +314,7 @@ func (n *sinkNode) Receive(ctx pipeline.NodeContext) error {
 			return errors.Trace(err)
 		}
 	case pipeline.MessageTypeTick:
-		if err := n.flushSink(ctx, n.resolvedTs); err != nil {
+		if err := n.flushSink(ctx, n.resolvedTs, false); err != nil {
 			return errors.Trace(err)
 		}
 	case pipeline.MessageTypeCommand:
@@ -326,7 +328,7 @@ func (n *sinkNode) Receive(ctx pipeline.NodeContext) error {
 		}
 	case pipeline.MessageTypeBarrier:
 		n.barrierTs = msg.BarrierTs
-		if err := n.flushSink(ctx, n.resolvedTs); err != nil {
+		if err := n.flushSink(ctx, n.resolvedTs, false); err != nil {
 			return errors.Trace(err)
 		}
 	}

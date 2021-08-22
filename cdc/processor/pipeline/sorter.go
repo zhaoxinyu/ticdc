@@ -142,7 +142,7 @@ func (n *sorterNode) Init(ctx pipeline.NodeContext) error {
 						// NOTE we allow the quota to be exceeded if blocking means interrupting a transaction.
 						// Otherwise the pipeline would deadlock.
 						err := n.flowController.Consume(commitTs, size, func() error {
-							log.Debug("sorter blocking",
+							log.Info("sorter blocking",
 								zap.Uint64("commitTs", commitTs),
 								zap.Uint64("lastCRTs", lastCRTs),
 								zap.Uint64("tableID", uint64(n.tableID)))
