@@ -339,7 +339,7 @@ func (b *bufferSink) runOnce(
 		oldCheckpointTime := oracle.GetTimeFromTS(oldCheckpointTs)
 		newCheckpointTime := oracle.GetTimeFromTS(checkpointTs)
 		oldUpperBound := b.flowControl.GetConsumption()
-		if newCheckpointTime.Sub(oldCheckpointTime) > 0 {
+		if newCheckpointTime.Sub(oldCheckpointTime) >= 0 {
 			upperBoundTime := newCheckpointTime.Add(flowControlStep)
 			b.flowControl.Request(oracle.EncodeTSO(upperBoundTime.Unix() * 1000))
 		}
