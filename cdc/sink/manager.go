@@ -117,7 +117,7 @@ func (m *Manager) flushBackendSink(ctx context.Context, tableID uint64) (model.T
 		atomic.StoreInt64(&m.flushing, 0)
 	}()
 	minEmittedTs, minTableID := m.getMinEmittedTs()
-	log.Info("manager flushBackendSink",
+	log.Debug("manager flushBackendSink",
 		zap.Uint64("resolvedTs", minEmittedTs),
 		zap.Uint64("tableID", tableID),
 		zap.Uint64("minTableID", uint64(minTableID)))
@@ -344,7 +344,7 @@ func (b *bufferSink) runOnce(
 			b.flowControl.Request(oracle.EncodeTSO(upperBoundTime.Unix() * 1000))
 		}
 
-		log.Info("bufferSink resolvedTs",
+		log.Debug("bufferSink resolvedTs",
 			zap.Uint64("oldCheckpointTs", oldCheckpointTs),
 			zap.Uint64("checkpointTs", checkpointTs),
 			zap.Uint64("oldUpperBound", oldUpperBound),

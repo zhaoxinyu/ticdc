@@ -124,7 +124,7 @@ func (n *sinkNode) flushSink(ctx pipeline.NodeContext, resolvedTs model.Ts, verb
 		}
 	}()
 	if verbose {
-		log.Info("sinkNode flushSink",
+		log.Debug("sinkNode flushSink",
 			zap.Uint64("resolvedTs", resolvedTs),
 			zap.Uint64("barrierTs", n.barrierTs),
 			zap.Uint64("checkpointTs", n.checkpointTs),
