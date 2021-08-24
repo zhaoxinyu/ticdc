@@ -43,6 +43,14 @@ var (
 			Help:      "The time it took to finish a scanRegions call.",
 			Buckets:   prometheus.ExponentialBuckets(0.001 /* 1 ms */, 2, 18),
 		}, []string{"capture"})
+	matcherSize = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "ticdc",
+			Subsystem: "kvclient",
+			Name:      "matcher_size_bytes",
+			Help:      "Size of mathcer events.",
+			Buckets:   prometheus.ExponentialBuckets(16, 2, 25),
+		}, []string{"capture"})
 	eventSize = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "ticdc",
@@ -107,6 +115,7 @@ var (
 func InitMetrics(registry *prometheus.Registry) {
 	registry.MustRegister(eventFeedErrorCounter)
 	registry.MustRegister(scanRegionsDuration)
+	registry.MustRegister(matcherSize)
 	registry.MustRegister(eventSize)
 	registry.MustRegister(eventFeedGauge)
 	registry.MustRegister(pullEventCounter)

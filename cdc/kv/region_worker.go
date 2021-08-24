@@ -109,6 +109,7 @@ func (rsm *regionStateManager) delState(regionID uint64) {
 
 type regionWorkerMetrics struct {
 	// kv events related metrics
+	matcherSize                       prometheus.Observer
 	metricEventSize                   prometheus.Observer
 	metricPullEventInitializedCounter prometheus.Counter
 	metricPullEventPrewriteCounter    prometheus.Counter
@@ -183,6 +184,7 @@ func (w *regionWorker) initMetrics(ctx context.Context) {
 
 	metrics := &regionWorkerMetrics{}
 	metrics.metricEventSize = eventSize.WithLabelValues(captureAddr)
+	metrics.matcherSize = matcherSize.WithLabelValues(captureAddr)
 	metrics.metricPullEventInitializedCounter = pullEventCounter.WithLabelValues(cdcpb.Event_INITIALIZED.String(), captureAddr, changefeedID)
 	metrics.metricPullEventCommittedCounter = pullEventCounter.WithLabelValues(cdcpb.Event_COMMITTED.String(), captureAddr, changefeedID)
 	metrics.metricPullEventCommitCounter = pullEventCounter.WithLabelValues(cdcpb.Event_COMMIT.String(), captureAddr, changefeedID)
@@ -426,6 +428,11 @@ func (w *regionWorker) processEvent(ctx context.Context, event *regionStatefulEv
 		if err = w.handleResolvedTs(ctx, event.resolvedTs.Ts, event.state); err != nil {
 			err = w.handleSingleRegionError(ctx, err, event.state)
 		}
+	}
+	now := time.Now()
+	if now.Sub(event.state.matcherObserve) > 5*time.Second {
+		w.metrics.matcherSize.Observe(float64(event.state.matcher.size()))
+		event.state.matcherObserve = now
 	}
 	event.state.lock.Unlock()
 	return err

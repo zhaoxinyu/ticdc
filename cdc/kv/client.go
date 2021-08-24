@@ -154,6 +154,7 @@ type regionFeedState struct {
 	lock           sync.RWMutex
 	initialized    bool
 	matcher        *matcher
+	matcherObserve time.Time
 	startFeedTime  time.Time
 	lastResolvedTs uint64
 }

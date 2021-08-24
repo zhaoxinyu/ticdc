@@ -14,6 +14,8 @@
 package kv
 
 import (
+	"unsafe"
+
 	"github.com/pingcap/kvproto/pkg/cdcpb"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
@@ -21,13 +23,25 @@ import (
 
 type matcher struct {
 	// TODO : clear the single prewrite
-	unmatchedValue map[matchKey]*cdcpb.Event_Row
-	cachedCommit   []*cdcpb.Event_Row
+	unmatchedValue     map[matchKey]*cdcpb.Event_Row
+	unmatchedValueSize int
+	cachedCommit       []*cdcpb.Event_Row
+	cachedCommitSize   int
 }
 
 type matchKey struct {
 	startTs uint64
 	key     string
+}
+
+func sizeOfEventRow(row *cdcpb.Event_Row) int {
+	const sizeOfEventRowValue = unsafe.Sizeof(cdcpb.Event_Row{})
+	return int(sizeOfEventRowValue) + len(row.Key) + len(row.Value) + len(row.OldValue)
+}
+
+func sizeOfMatchKey(key *matchKey) int {
+	const sizeOfMatchKeyValue = unsafe.Sizeof(matchKey{})
+	return int(sizeOfMatchKeyValue) + len(key.key)
 }
 
 func newMatchKey(row *cdcpb.Event_Row) matchKey {
@@ -54,15 +68,20 @@ func (m *matcher) putPrewriteRow(row *cdcpb.Event_Row) {
 		return
 	}
 	m.unmatchedValue[key] = row
+	m.unmatchedValueSize += sizeOfMatchKey(&key)
+	m.unmatchedValueSize += sizeOfEventRow(row)
 }
 
 // matchRow matches the commit event with the cached prewrite event
 // the Value and OldValue will be assigned if a matched prewrite event exists.
 func (m *matcher) matchRow(row *cdcpb.Event_Row) bool {
-	if value, exist := m.unmatchedValue[newMatchKey(row)]; exist {
+	key := newMatchKey(row)
+	if value, exist := m.unmatchedValue[key]; exist {
 		row.Value = value.GetValue()
 		row.OldValue = value.GetOldValue()
-		delete(m.unmatchedValue, newMatchKey(row))
+		delete(m.unmatchedValue, key)
+		m.unmatchedValueSize -= sizeOfMatchKey(&key)
+		m.unmatchedValueSize -= sizeOfEventRow(row)
 		return true
 	}
 	return false
@@ -70,11 +89,13 @@ func (m *matcher) matchRow(row *cdcpb.Event_Row) bool {
 
 func (m *matcher) cacheCommitRow(row *cdcpb.Event_Row) {
 	m.cachedCommit = append(m.cachedCommit, row)
+	m.cachedCommitSize += sizeOfEventRow(row)
 }
 
 func (m *matcher) matchCachedRow() []*cdcpb.Event_Row {
 	cachedCommit := m.cachedCommit
 	m.cachedCommit = nil
+	m.cachedCommitSize = 0
 	top := 0
 	for i := 0; i < len(cachedCommit); i++ {
 		cacheEntry := cachedCommit[i]
@@ -95,5 +116,15 @@ func (m *matcher) matchCachedRow() []*cdcpb.Event_Row {
 }
 
 func (m *matcher) rollbackRow(row *cdcpb.Event_Row) {
-	delete(m.unmatchedValue, newMatchKey(row))
+	key := newMatchKey(row)
+	if _, ok := m.unmatchedValue[key]; ok {
+		delete(m.unmatchedValue, key)
+		m.unmatchedValueSize -= sizeOfMatchKey(&key)
+		m.unmatchedValueSize -= sizeOfEventRow(row)
+	}
+}
+
+func (m *matcher) size() int {
+	return m.unmatchedValueSize
+	// delete(m.unmatchedValue, newMatchKey(row))
 }
