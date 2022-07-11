@@ -559,12 +559,31 @@ func (l *LogWriter) flushLogMeta(checkPointTs, resolvedTs uint64) error {
 	l.metaLock.Lock()
 	defer l.metaLock.Unlock()
 
-	if checkPointTs != 0 {
+	// NOTE:
+	// 1. It's possible that checkpoint ts is updated but resolved ts is not.
+	//    Reader should be compatible with this case.
+	// 2. flushLogMeta can be called with a regressed resolved timestamp.
+	hasChange := false
+	if checkPointTs > l.meta.CheckPointTs {
 		l.meta.CheckPointTs = checkPointTs
+		hasChange = true
+	} else if checkPointTs > 0 {
+		log.Warn("flushLogMeta with a regressed checkpoint ts, skip",
+			zap.Uint64("currCheckPointTs", l.meta.CheckPointTs),
+			zap.Uint64("recvCheckPointTs", checkPointTs))
 	}
-	if resolvedTs != 0 {
+	if resolvedTs > l.meta.ResolvedTs {
 		l.meta.ResolvedTs = resolvedTs
+		hasChange = true
+	} else if resolvedTs > 0 {
+		log.Warn("flushLogMeta with a regressed resolved ts, skip",
+			zap.Uint64("currResolvedTs", l.meta.ResolvedTs),
+			zap.Uint64("recvResolvedTs", resolvedTs))
 	}
+	if !hasChange {
+		return nil
+	}
+
 	data, err := l.meta.MarshalMsg(nil)
 	if err != nil {
 		return cerror.WrapError(cerror.ErrMarshalFailed, err)
