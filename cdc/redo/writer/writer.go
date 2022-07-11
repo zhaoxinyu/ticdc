@@ -52,7 +52,7 @@ type RedoLogWriter interface {
 	// FlushLog sends resolved-ts from table pipeline to log writer, it is
 	// essential to flush when a table doesn't have any row change event for
 	// some time, and the resolved ts of this table should be moved forward.
-	FlushLog(ctx context.Context, rtsMap map[model.TableID]model.Ts, minResolvedTs model.Ts) error
+	FlushLog(ctx context.Context, rtsMap map[model.TableID]model.Ts) error
 
 	// EmitCheckpointTs write CheckpointTs to meta file
 	EmitCheckpointTs(ctx context.Context, ts uint64) error
@@ -372,7 +372,7 @@ func (l *LogWriter) SendDDL(ctx context.Context, ddl *model.RedoDDLEvent) error 
 }
 
 // FlushLog implement FlushLog api
-func (l *LogWriter) FlushLog(ctx context.Context, rtsMap map[model.TableID]model.Ts, minResolvedTs model.Ts) error {
+func (l *LogWriter) FlushLog(ctx context.Context, rtsMap map[model.TableID]model.Ts) error {
 	select {
 	case <-ctx.Done():
 		return errors.Trace(ctx.Err())
@@ -383,7 +383,7 @@ func (l *LogWriter) FlushLog(ctx context.Context, rtsMap map[model.TableID]model
 		return cerror.ErrRedoWriterStopped.GenWithStackByArgs()
 	}
 
-	if err := l.flush(minResolvedTs); err != nil {
+	if err := l.flush(rtsMap); err != nil {
 		return err
 	}
 
@@ -401,7 +401,7 @@ func (l *LogWriter) EmitCheckpointTs(ctx context.Context, ts uint64) error {
 	if l.isStopped() {
 		return cerror.ErrRedoWriterStopped.GenWithStackByArgs()
 	}
-	return l.flushLogMeta(ts, 0)
+	return l.flushLogMeta(ts, nil)
 }
 
 // DeleteAllLogs implement DeleteAllLogs api
@@ -525,10 +525,10 @@ func (l *LogWriter) setMaxCommitTs(tableID int64, commitTs uint64) uint64 {
 }
 
 // flush flushes all the buffered data to the disk.
-func (l *LogWriter) flush(minResolvedTs uint64) error {
+func (l *LogWriter) flush(rtsMap map[model.TableID]model.Ts) error {
 	err1 := l.ddlWriter.Flush()
 	err2 := l.rowWriter.Flush()
-	err3 := l.flushLogMeta(0, minResolvedTs)
+	err3 := l.flushLogMeta(0, rtsMap)
 
 	err := multierr.Append(err1, err2)
 	err = multierr.Append(err, err3)
@@ -549,31 +549,37 @@ func (l *LogWriter) getMetafileName() string {
 		common.DefaultMetaFileType, common.MetaEXT)
 }
 
-func (l *LogWriter) flushLogMeta(checkPointTs, resolvedTs uint64) error {
+func (l *LogWriter) flushLogMeta(checkPointTs uint64, rtsMap map[model.TableID]model.Ts) error {
 	l.metaLock.Lock()
 	defer l.metaLock.Unlock()
 
-	// NOTE:
-	// 1. It's possible that checkpoint ts is updated but resolved ts is not.
-	//    Reader should be compatible with this case.
-	// 2. flushLogMeta can be called with a regressed resolved timestamp.
 	hasChange := false
 	if checkPointTs > l.meta.CheckPointTs {
 		l.meta.CheckPointTs = checkPointTs
 		hasChange = true
 	} else if checkPointTs > 0 {
-		log.Warn("flushLogMeta with a regressed checkpoint ts, skip",
+		log.Fatal("flushLogMeta with a regressed checkpoint ts",
 			zap.Uint64("currCheckPointTs", l.meta.CheckPointTs),
 			zap.Uint64("recvCheckPointTs", checkPointTs))
 	}
-	if resolvedTs > l.meta.ResolvedTs {
-		l.meta.ResolvedTs = resolvedTs
-		hasChange = true
-	} else if resolvedTs > 0 {
-		log.Warn("flushLogMeta with a regressed resolved ts, skip",
-			zap.Uint64("currResolvedTs", l.meta.ResolvedTs),
-			zap.Uint64("recvResolvedTs", resolvedTs))
+
+	// Replace the old rtsMap with the new one.
+	if rtsMap != nil && len(rtsMap) > 0 {
+		oldRtsMap := l.meta.ResolvedTsList
+		l.meta.ResolvedTsList = rtsMap
+		for tID, ts := range l.meta.ResolvedTsList {
+			if oldRtsMap[tID] != ts {
+				hasChange = true
+				if oldRtsMap[tID] > ts {
+					log.Fatal("flushLogMeta with a regressed resolved ts",
+						zap.Int64("tableID", tID),
+						zap.Uint64("currResolvedTs", oldRtsMap[tID]),
+						zap.Uint64("recvResolvedTs", ts))
+				}
+			}
+		}
 	}
+
 	if !hasChange {
 		return nil
 	}

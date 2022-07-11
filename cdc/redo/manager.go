@@ -366,7 +366,6 @@ func (m *ManagerImpl) AddTable(tableID model.TableID, startTs uint64) {
 		log.Warn("add duplicated table in redo log manager", zap.Int64("tableID", tableID))
 		return
 	}
-
 	if startTs < m.GetMinResolvedTs() {
 		atomic.StoreUint64(&m.minResolvedTs, startTs)
 	}
@@ -403,9 +402,9 @@ func (m *ManagerImpl) prepareForFlush() (tableRtsMap map[model.TableID]model.Ts,
 		unflushed := rts.getUnflushed()
 		flushed := rts.getFlushed()
 		if unflushed > flushed {
-			tableRtsMap[tableID] = unflushed
 			flushed = unflushed
 		}
+        tableRtsMap[tableID] = flushed
 		if flushed < minResolvedTs {
 			minResolvedTs = flushed
 		}
@@ -419,6 +418,11 @@ func (m *ManagerImpl) prepareForFlush() (tableRtsMap map[model.TableID]model.Ts,
 }
 
 func (m *ManagerImpl) postFlush(tableRtsMap map[model.TableID]model.Ts, minResolvedTs model.Ts) {
+	if minResolvedTs < m.minResolvedTs && minResolvedTs != 0 {
+		log.Fatal("resolved timestamp should never regress in postFlush",
+			zap.Uint64("prevResolvedTs", m.minResolvedTs),
+			zap.Uint64("nextResolvedTs", minResolvedTs))
+	}
 	if minResolvedTs > m.minResolvedTs {
 		atomic.StoreUint64(&m.minResolvedTs, minResolvedTs)
 	}
@@ -446,7 +450,7 @@ func (m *ManagerImpl) flushLog(ctx context.Context, handleErr func(err error)) {
 		defer atomic.StoreInt64(&m.flushing, 0)
 
 		tableRtsMap, minResolvedTs := m.prepareForFlush()
-		err := m.writer.FlushLog(ctx, tableRtsMap, minResolvedTs)
+		err := m.writer.FlushLog(ctx, tableRtsMap)
 		m.metricFlushLogDuration.Observe(time.Since(m.lastFlushTime).Seconds())
 		if err != nil {
 			handleErr(err)
