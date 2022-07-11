@@ -503,7 +503,7 @@ func (m *ManagerImpl) bgUpdateLog(ctx context.Context, errCh chan<- error) {
 				for _, row := range cache.rows {
 					logs = append(logs, RowToRedo(row))
 				}
-				_, err := m.writer.WriteLog(ctx, cache.tableID, logs)
+				err := m.writer.WriteLog(ctx, cache.tableID, logs)
 				if err != nil {
 					handleErr(err)
 					return

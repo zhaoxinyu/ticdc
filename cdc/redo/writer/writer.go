@@ -44,7 +44,7 @@ type RedoLogWriter interface {
 	io.Closer
 
 	// WriteLog writer RedoRowChangedEvent to row log file
-	WriteLog(ctx context.Context, tableID int64, rows []*model.RedoRowChangedEvent) (resolvedTs uint64, err error)
+	WriteLog(ctx context.Context, tableID int64, rows []*model.RedoRowChangedEvent) error
 
 	// SendDDL writer RedoDDLEvent to ddl log file
 	SendDDL(ctx context.Context, ddl *model.RedoDDLEvent) error
@@ -298,21 +298,20 @@ func (l *LogWriter) gc() error {
 }
 
 // WriteLog implement WriteLog api
-func (l *LogWriter) WriteLog(ctx context.Context, tableID int64, rows []*model.RedoRowChangedEvent) (uint64, error) {
+func (l *LogWriter) WriteLog(ctx context.Context, tableID int64, rows []*model.RedoRowChangedEvent) error {
 	select {
 	case <-ctx.Done():
-		return 0, errors.Trace(ctx.Err())
+		return errors.Trace(ctx.Err())
 	default:
 	}
 
 	if l.isStopped() {
-		return 0, cerror.ErrRedoWriterStopped.GenWithStackByArgs()
+		return cerror.ErrRedoWriterStopped.GenWithStackByArgs()
 	}
 	if len(rows) == 0 {
-		return 0, nil
+		return nil
 	}
 
-	maxCommitTs := l.setMaxCommitTs(tableID, 0)
 	for i, r := range rows {
 		if r == nil || r.Row == nil {
 			continue
@@ -325,22 +324,20 @@ func (l *LogWriter) WriteLog(ctx context.Context, tableID int64, rows []*model.R
 		// TODO: crc check
 		data, err := rl.MarshalMsg(nil)
 		if err != nil {
-			// TODO: just return 0 if err ?
-			return maxCommitTs, cerror.WrapError(cerror.ErrMarshalFailed, err)
+			return cerror.WrapError(cerror.ErrMarshalFailed, err)
 		}
 
 		l.rowWriter.AdvanceTs(r.Row.CommitTs)
 		_, err = l.rowWriter.Write(data)
 		if err != nil {
 			l.metricTotalRowsCount.Add(float64(i))
-			return maxCommitTs, err
+			return err
 		}
 
-		maxCommitTs = l.setMaxCommitTs(tableID, r.Row.CommitTs)
 		redoLogPool.Put(rl)
 	}
 	l.metricTotalRowsCount.Add(float64(len(rows)))
-	return maxCommitTs, nil
+	return nil
 }
 
 // SendDDL implement SendDDL api
@@ -390,9 +387,6 @@ func (l *LogWriter) FlushLog(ctx context.Context, rtsMap map[model.TableID]model
 		return err
 	}
 
-	for tableID, rts := range rtsMap {
-		l.setMaxCommitTs(tableID, rts)
-	}
 	return nil
 }
 
