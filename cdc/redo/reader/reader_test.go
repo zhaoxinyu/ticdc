@@ -205,7 +205,7 @@ func TestLogReaderResetReader(t *testing.T) {
 			ddlReader: []fileReader{mockReader},
 			meta: &common.LogMeta{
 				CheckPointTs:   tt.args.checkPointTs,
-				ResolvedTsList: map[model.TableID]model.Ts{int64(1): uint64(tt.args.resolvedTs)},
+				ResolvedTsList: map[model.TableID]model.Ts{int64(1): tt.args.resolvedTs},
 			},
 		}
 

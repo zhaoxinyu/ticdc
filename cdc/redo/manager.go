@@ -420,14 +420,18 @@ func (m *ManagerImpl) prepareForFlush() (tableRtsMap map[model.TableID]model.Ts,
 }
 
 func (m *ManagerImpl) postFlush(tableRtsMap map[model.TableID]model.Ts, minResolvedTs model.Ts) {
-	if minResolvedTs < m.minResolvedTs && minResolvedTs != 0 {
-		log.Fatal("resolved timestamp should never regress in postFlush",
-			zap.Uint64("prevResolvedTs", m.minResolvedTs),
-			zap.Uint64("nextResolvedTs", minResolvedTs))
+	for {
+		prevMin := atomic.LoadUint64(&m.minResolvedTs)
+		if minResolvedTs != 0 && minResolvedTs < prevMin {
+			log.Fatal("resolved timestamp should never regress in postFlush",
+				zap.Uint64("prevResolvedTs", m.minResolvedTs),
+				zap.Uint64("nextResolvedTs", minResolvedTs))
+		}
+		if minResolvedTs == prev || atomic.CompareAndSwapUint64(&m.minResolvedTs, prevMin, minResolvedTs) {
+			break
+		}
 	}
-	if minResolvedTs > m.minResolvedTs {
-		atomic.StoreUint64(&m.minResolvedTs, minResolvedTs)
-	}
+
 	for tableID, flushed := range tableRtsMap {
 		if value, loaded := m.rtsMap.Load(tableID); loaded {
 			value.(*statefulRts).setFlushed(flushed)

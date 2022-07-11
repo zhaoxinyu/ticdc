@@ -383,11 +383,7 @@ func (l *LogWriter) FlushLog(ctx context.Context, rtsMap map[model.TableID]model
 		return cerror.ErrRedoWriterStopped.GenWithStackByArgs()
 	}
 
-	if err := l.flush(rtsMap); err != nil {
-		return err
-	}
-
-	return nil
+	return l.flush(rtsMap)
 }
 
 // EmitCheckpointTs implement EmitCheckpointTs api
