@@ -557,14 +557,14 @@ func (l *LogWriter) flushLogMeta(checkPointTs uint64, rtsMap map[model.TableID]m
 	if checkPointTs > l.meta.CheckPointTs {
 		l.meta.CheckPointTs = checkPointTs
 		hasChange = true
-	} else if checkPointTs > 0 {
+	} else if checkPointTs > 0 && checkPointTs != l.meta.CheckPointTs {
 		log.Fatal("flushLogMeta with a regressed checkpoint ts",
 			zap.Uint64("currCheckPointTs", l.meta.CheckPointTs),
 			zap.Uint64("recvCheckPointTs", checkPointTs))
 	}
 
 	// Replace the old rtsMap with the new one.
-	if rtsMap != nil && len(rtsMap) > 0 {
+	if len(rtsMap) > 0 {
 		oldRtsMap := l.meta.ResolvedTsList
 		l.meta.ResolvedTsList = rtsMap
 		for tID, ts := range l.meta.ResolvedTsList {

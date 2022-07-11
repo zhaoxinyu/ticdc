@@ -367,6 +367,7 @@ func (m *ManagerImpl) AddTable(tableID model.TableID, startTs uint64) {
 		log.Warn("add duplicated table in redo log manager", zap.Int64("tableID", tableID))
 		return
 	}
+
 	if startTs < m.GetMinResolvedTs() {
 		atomic.StoreUint64(&m.minResolvedTs, startTs)
 	}

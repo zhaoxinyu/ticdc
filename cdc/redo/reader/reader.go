@@ -126,16 +126,7 @@ func (l *LogReader) ResetReader(ctx context.Context, startTs, endTs uint64) erro
 		}
 	}
 
-	var minResolvedTs uint64 = math.MaxUint64
-	for _, rts := range l.meta.ResolvedTsList {
-		if rts < minResolvedTs {
-			minResolvedTs = rts
-		}
-	}
-	if minResolvedTs == math.MaxUint64 {
-		minResolvedTs = l.meta.CheckPointTs
-	}
-
+	minResolvedTs := l.meta.ResolvedTs()
 	if startTs > endTs || startTs > minResolvedTs || endTs <= l.meta.CheckPointTs {
 		return errors.Errorf(
 			"startTs, endTs (%d, %d] should match the boundary: (%d, %d]",
@@ -351,16 +342,7 @@ func (l *LogReader) ReadMeta(ctx context.Context) (checkpointTs, resolvedTs uint
 	defer l.metaLock.Unlock()
 
 	if l.meta != nil {
-		var minResolvedTs uint64 = math.MaxUint64
-		for _, rts := range l.meta.ResolvedTsList {
-			if rts < minResolvedTs {
-				minResolvedTs = rts
-			}
-		}
-		if minResolvedTs == math.MaxUint64 {
-			minResolvedTs = l.meta.CheckPointTs
-		}
-		return l.meta.CheckPointTs, minResolvedTs, nil
+		return l.meta.CheckPointTs, l.meta.ResolvedTs(), nil
 	}
 
 	files, err := ioutil.ReadDir(l.cfg.Dir)
@@ -395,12 +377,10 @@ func (l *LogReader) ReadMeta(ctx context.Context) (checkpointTs, resolvedTs uint
 			}
 
 			// For every table, get the max resolved timestamp for it.
-			if meta.ResolvedTsList != nil {
-				for tID, ts := range meta.ResolvedTsList {
-					got, ok := rtsMap[tID]
-					if !ok || got < ts {
-						rtsMap[tID] = ts
-					}
+			for tID, ts := range meta.ResolvedTsList {
+				got, ok := rtsMap[tID]
+				if !ok || got < ts {
+					rtsMap[tID] = ts
 				}
 			}
 		}
