@@ -404,7 +404,7 @@ func (m *ManagerImpl) prepareForFlush() (tableRtsMap map[model.TableID]model.Ts,
 		if unflushed > flushed {
 			flushed = unflushed
 		}
-        tableRtsMap[tableID] = flushed
+		tableRtsMap[tableID] = flushed
 		if flushed < minResolvedTs {
 			minResolvedTs = flushed
 		}
