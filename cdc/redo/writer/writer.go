@@ -554,7 +554,7 @@ func (l *LogWriter) flushLogMeta(checkPointTs uint64, rtsMap map[model.TableID]m
 		l.meta.CheckPointTs = checkPointTs
 		hasChange = true
 	} else if checkPointTs > 0 && checkPointTs != l.meta.CheckPointTs {
-		log.Fatal("flushLogMeta with a regressed checkpoint ts",
+		log.Panic("flushLogMeta with a regressed checkpoint ts",
 			zap.Uint64("currCheckPointTs", l.meta.CheckPointTs),
 			zap.Uint64("recvCheckPointTs", checkPointTs))
 	}

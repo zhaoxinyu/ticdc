@@ -420,8 +420,7 @@ func (m *ManagerImpl) prepareForFlush() (tableRtsMap map[model.TableID]model.Ts,
 }
 
 func (m *ManagerImpl) postFlush(tableRtsMap map[model.TableID]model.Ts, minResolvedTs model.Ts) {
-	prevMin := atomic.LoadUint64(&m.minResolvedTs)
-	if minResolvedTs > prevMin {
+	if minResolvedTs != 0 {
 		// m.minResolvedTs is only updated in flushLog, so no other one can change it.
 		atomic.StoreUint64(&m.minResolvedTs, minResolvedTs)
 	}
