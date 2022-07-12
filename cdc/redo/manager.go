@@ -375,20 +375,8 @@ func (m *ManagerImpl) AddTable(tableID model.TableID, startTs uint64) {
 
 // RemoveTable removes a table from redo log manager
 func (m *ManagerImpl) RemoveTable(tableID model.TableID) {
-	value, ok := m.rtsMap.Load(tableID)
-	if !ok {
+	if _, ok := m.rtsMap.LoadAndDelete(tableID); !ok {
 		log.Warn("remove a table not maintained in redo log manager", zap.Int64("tableID", tableID))
-		return
-	}
-	rts := value.(*statefulRts)
-	for {
-		// If the table is added back again, resolved timestamp can regress.
-		// So wait all pending items for the table have been flushed.
-		if rts.getFlushed() == rts.getUnflushed() {
-			m.rtsMap.Delete(tableID)
-			break
-		}
-		time.Sleep(time.Millisecond * time.Duration(100))
 	}
 }
 
@@ -432,19 +420,10 @@ func (m *ManagerImpl) prepareForFlush() (tableRtsMap map[model.TableID]model.Ts,
 }
 
 func (m *ManagerImpl) postFlush(tableRtsMap map[model.TableID]model.Ts, minResolvedTs model.Ts) {
-	for {
-		prevMin := atomic.LoadUint64(&m.minResolvedTs)
-		if minResolvedTs == 0 || minResolvedTs == prevMin {
-			// Do nothing.
-			break
-		}
-		if minResolvedTs < prevMin {
-			log.Fatal("resolved timestamp should never regress in postFlush",
-				zap.Uint64("prevResolvedTs", m.minResolvedTs),
-				zap.Uint64("nextResolvedTs", minResolvedTs))
-		} else if atomic.CompareAndSwapUint64(&m.minResolvedTs, prevMin, minResolvedTs) {
-			break
-		}
+	prevMin := atomic.LoadUint64(&m.minResolvedTs)
+	if minResolvedTs > prevMin {
+		// m.minResolvedTs is only updated in flushLog, so no other one can change it.
+		atomic.StoreUint64(&m.minResolvedTs, minResolvedTs)
 	}
 
 	for tableID, flushed := range tableRtsMap {

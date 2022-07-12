@@ -567,7 +567,9 @@ func (l *LogWriter) flushLogMeta(checkPointTs uint64, rtsMap map[model.TableID]m
 			if oldRtsMap[tID] != ts {
 				hasChange = true
 				if oldRtsMap[tID] > ts {
-					log.Fatal("flushLogMeta with a regressed resolved ts",
+					// Table resolved timestamp can regress if the table
+					// is removed and then added back quickly.
+					log.Warn("flushLogMeta with a regressed resolved ts",
 						zap.Int64("tableID", tID),
 						zap.Uint64("currResolvedTs", oldRtsMap[tID]),
 						zap.Uint64("recvResolvedTs", ts))
