@@ -57,9 +57,8 @@ const (
 
 // LogMeta is used for store meta info.
 type LogMeta struct {
-	CheckPointTs uint64 `msg:"checkPointTs"`
-
-	ResolvedTsList map[int64]uint64 `msg:"resolvedTsList"`
+	CheckPointTs   uint64
+	ResolvedTsList map[int64]uint64
 }
 
 // ResolvedTs returns the minimal resolved timestamp of all tables.

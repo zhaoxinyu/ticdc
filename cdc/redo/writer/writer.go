@@ -17,7 +17,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -230,31 +229,17 @@ func (l *LogWriter) initMeta(ctx context.Context) error {
 	default:
 	}
 
-	l.meta = &common.LogMeta{ResolvedTsList: map[int64]uint64{}}
-	files, err := ioutil.ReadDir(l.cfg.Dir)
+	data, err := os.ReadFile(l.filePath())
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return cerror.WrapError(cerror.ErrRedoMetaInitialize, errors.Annotate(err, "can't read log file directory"))
+		return cerror.WrapError(cerror.ErrRedoMetaInitialize, errors.Annotate(err, "read meta file fail"))
 	}
 
-	for _, file := range files {
-		if filepath.Ext(file.Name()) == common.MetaEXT {
-			path := filepath.Join(l.cfg.Dir, file.Name())
-			fileData, err := os.ReadFile(path)
-			if err != nil {
-				return cerror.WrapError(cerror.ErrRedoMetaInitialize, err)
-			}
-
-			_, err = l.meta.UnmarshalMsg(fileData)
-			if err != nil {
-				l.meta = &common.LogMeta{ResolvedTsList: map[int64]uint64{}}
-				return cerror.WrapError(cerror.ErrRedoMetaInitialize, err)
-			}
-			break
-		}
+	l.meta = &common.LogMeta{}
+	_, err = l.meta.UnmarshalMsg(data)
+	if err != nil {
+		return cerror.WrapError(cerror.ErrRedoMetaInitialize, err)
 	}
+
 	return nil
 }
 
@@ -503,21 +488,6 @@ func (l *LogWriter) Close() error {
 	err = multierr.Append(err, l.rowWriter.Close())
 	err = multierr.Append(err, l.ddlWriter.Close())
 	return err
-}
-
-func (l *LogWriter) setMaxCommitTs(tableID int64, commitTs uint64) uint64 {
-	l.metaLock.Lock()
-	defer l.metaLock.Unlock()
-
-	if v, ok := l.meta.ResolvedTsList[tableID]; ok {
-		if v < commitTs {
-			l.meta.ResolvedTsList[tableID] = commitTs
-		}
-	} else {
-		l.meta.ResolvedTsList[tableID] = commitTs
-	}
-
-	return l.meta.ResolvedTsList[tableID]
 }
 
 // flush flushes all the buffered data to the disk.
