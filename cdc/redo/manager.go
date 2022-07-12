@@ -396,6 +396,9 @@ func (m *ManagerImpl) Cleanup(ctx context.Context) error {
 }
 
 func (m *ManagerImpl) prepareForFlush() (tableRtsMap map[model.TableID]model.Ts, minResolvedTs model.Ts) {
+	// FIXME: currently all table progresses are flushed into meta file. It can be an issue
+	// if there are lots of tables. If we can put table meta into row file, it's only necessary
+	// to take care updated tables.
 	tableRtsMap = make(map[model.TableID]model.Ts)
 	minResolvedTs = math.MaxUint64
 	m.rtsMap.Range(func(key interface{}, value interface{}) bool {

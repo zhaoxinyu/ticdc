@@ -18,6 +18,8 @@ import (
 	"math"
 
 	"github.com/pingcap/tiflow/cdc/model"
+	cerror "github.com/pingcap/tiflow/pkg/errors"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -94,9 +96,15 @@ func (z LogMeta) MarshalMsg(b []byte) ([]byte, error) {
 
 // UnmarshalMsg implements msgp.Unmarshaler
 func (z *LogMeta) UnmarshalMsg(b []byte) ([]byte, error) {
+	if len(b) < 16 {
+		return b, cerror.WrapError(cerror.ErrUnmarshalFailed, errors.New("unmarshal redo meta"))
+	}
 	z.CheckPointTs = binary.LittleEndian.Uint64(b[0:8])
 	tsListLen := binary.LittleEndian.Uint64(b[8:16])
-	z.ResolvedTsList = make(map[model.TableID]model.Ts)
+	z.ResolvedTsList = make(map[model.TableID]model.Ts, tsListLen)
+	if len(b) < 16+16*int(tsListLen) {
+		return b, cerror.WrapError(cerror.ErrUnmarshalFailed, errors.New("unmarshal redo meta"))
+	}
 
 	tStart := 16
 	for i := 0; i < int(tsListLen); i++ {

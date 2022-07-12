@@ -39,9 +39,9 @@ func TestMarshalAndUnmarshal(t *testing.T) {
 		data, err = meta1.MarshalMsg(nil)
 		require.Nil(t, err)
 
-		data, err = meta2.UnmarshalMsg(data)
+		zero, err := meta2.UnmarshalMsg(data)
 		require.Nil(t, err)
-		require.Equal(t, 0, len(data))
+		require.Equal(t, 0, len(zero))
 
 		require.Equal(t, meta1.CheckPointTs, meta2.CheckPointTs)
 		require.Equal(t, meta1.ResolvedTs(), meta2.ResolvedTs())
@@ -50,5 +50,8 @@ func TestMarshalAndUnmarshal(t *testing.T) {
 			v2 := meta2.ResolvedTsList[k]
 			require.Equal(t, v1, v2)
 		}
+
+		_, err = meta2.UnmarshalMsg(data[0 : len(data)-1])
+		require.NotNil(t, err)
 	}
 }

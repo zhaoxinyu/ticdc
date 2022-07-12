@@ -93,8 +93,10 @@ type LogWriter struct {
 	rowWriter fileWriter
 	ddlWriter fileWriter
 	storage   storage.ExternalStorage
-	meta      *common.LogMeta
-	metaLock  sync.RWMutex
+
+	// Fields are protected by metaLock.
+	meta     *common.LogMeta
+	metaLock sync.RWMutex
 
 	metricTotalRowsCount prometheus.Gauge
 }
@@ -229,12 +231,16 @@ func (l *LogWriter) initMeta(ctx context.Context) error {
 	default:
 	}
 
+	l.meta = &common.LogMeta{ResolvedTsList: make(map[model.TableID]model.Ts)}
+
 	data, err := os.ReadFile(l.filePath())
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return cerror.WrapError(cerror.ErrRedoMetaInitialize, errors.Annotate(err, "read meta file fail"))
 	}
 
-	l.meta = &common.LogMeta{}
 	_, err = l.meta.UnmarshalMsg(data)
 	if err != nil {
 		return cerror.WrapError(cerror.ErrRedoMetaInitialize, err)
@@ -515,7 +521,7 @@ func (l *LogWriter) getMetafileName() string {
 		common.DefaultMetaFileType, common.MetaEXT)
 }
 
-func (l *LogWriter) flushLogMeta(checkPointTs uint64, rtsMap map[model.TableID]model.Ts) error {
+func (l *LogWriter) mergeMeta(checkPointTs uint64, rtsMap map[model.TableID]model.Ts) ([]byte, error) {
 	l.metaLock.Lock()
 	defer l.metaLock.Unlock()
 
@@ -529,32 +535,57 @@ func (l *LogWriter) flushLogMeta(checkPointTs uint64, rtsMap map[model.TableID]m
 			zap.Uint64("recvCheckPointTs", checkPointTs))
 	}
 
-	// Replace the old rtsMap with the new one.
-	if len(rtsMap) > 0 {
-		oldRtsMap := l.meta.ResolvedTsList
-		l.meta.ResolvedTsList = rtsMap
-		for tID, ts := range l.meta.ResolvedTsList {
-			if oldRtsMap[tID] != ts {
-				hasChange = true
-				if oldRtsMap[tID] > ts {
-					// Table resolved timestamp can regress if the table
-					// is removed and then added back quickly.
-					log.Warn("flushLogMeta with a regressed resolved ts",
-						zap.Int64("tableID", tID),
-						zap.Uint64("currResolvedTs", oldRtsMap[tID]),
-						zap.Uint64("recvResolvedTs", ts))
-				}
+	for tID, ts := range rtsMap {
+		if l.meta.ResolvedTsList[tID] == ts {
+			continue
+		}
+		hasChange = true
+		if l.meta.ResolvedTsList[tID] > ts {
+			// Table resolved timestamp can regress if the table
+			// is removed and then added back quickly.
+			log.Warn("flushLogMeta with a regressed resolved ts",
+				zap.Int64("tableID", tID),
+				zap.Uint64("currResolvedTs", ts),
+				zap.Uint64("recvResolvedTs", l.meta.ResolvedTsList[tID]))
+		}
+		l.meta.ResolvedTsList[tID] = ts
+	}
+
+	// If a table has been removed from the cdc instance, clear it from meta file
+	// only after checkpoint has been advanced to its resolved timestamp.
+	garbageTIDs := make([]model.TableID, 0)
+	for tID, ts := range l.meta.ResolvedTsList {
+		if _, ok := rtsMap[tID]; !ok {
+			// NOTE: ts < l.meta.CheckPointTs means the table must have been
+			// took over by other cdc instances.
+			if ts < l.meta.CheckPointTs {
+				garbageTIDs = append(garbageTIDs, tID)
 			}
 		}
 	}
+	for _, tID := range garbageTIDs {
+		delete(l.meta.ResolvedTsList, tID)
+		hasChange = true
+	}
 
 	if !hasChange {
-		return nil
+		return nil, nil
 	}
 
 	data, err := l.meta.MarshalMsg(nil)
 	if err != nil {
-		return cerror.WrapError(cerror.ErrMarshalFailed, err)
+		err = cerror.WrapError(cerror.ErrMarshalFailed, err)
+	}
+	return data, err
+}
+
+func (l *LogWriter) flushLogMeta(checkPointTs uint64, rtsMap map[model.TableID]model.Ts) error {
+	data, err := l.mergeMeta(checkPointTs, rtsMap)
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return nil
 	}
 
 	err = os.MkdirAll(l.cfg.Dir, common.DefaultDirMode)

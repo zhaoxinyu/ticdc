@@ -15,7 +15,6 @@ package writer
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"net/url"
 	"os"
@@ -480,8 +479,19 @@ func TestNewLogWriter(t *testing.T) {
 	require.NotSame(t, ll, ll2)
 
 	dir := t.TempDir()
-	fileName := fmt.Sprintf("%s_%s_%d_%s%s", "cp", "test-changefeed", time.Now().Unix(), common.DefaultMetaFileType, common.MetaEXT)
-	path := filepath.Join(dir, fileName)
+	cfg = &LogWriterConfig{
+		Dir:               dir,
+		ChangeFeedID:      model.DefaultChangeFeedID("test-cf"),
+		CaptureID:         "cp",
+		MaxLogSize:        10,
+		CreateTime:        time.Date(2000, 1, 1, 1, 1, 1, 1, &time.Location{}),
+		FlushIntervalInMs: 5,
+	}
+	l, err := NewLogWriter(ctx, cfg)
+	require.Nil(t, err)
+	err = l.Close()
+	require.Nil(t, err)
+	path := l.filePath()
 	f, err := os.Create(path)
 	require.Nil(t, err)
 
@@ -494,15 +504,7 @@ func TestNewLogWriter(t *testing.T) {
 	_, err = f.Write(data)
 	require.Nil(t, err)
 
-	cfg = &LogWriterConfig{
-		Dir:               dir,
-		ChangeFeedID:      model.DefaultChangeFeedID("test-cf"),
-		CaptureID:         "cp",
-		MaxLogSize:        10,
-		CreateTime:        time.Date(2000, 1, 1, 1, 1, 1, 1, &time.Location{}),
-		FlushIntervalInMs: 5,
-	}
-	l, err := NewLogWriter(ctx, cfg)
+	l, err = NewLogWriter(ctx, cfg)
 	require.Nil(t, err)
 	err = l.Close()
 	require.Nil(t, err)

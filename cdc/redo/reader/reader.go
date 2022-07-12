@@ -364,6 +364,7 @@ func (l *LogReader) ReadMeta(ctx context.Context) (checkpointTs, resolvedTs uint
 				return 0, 0, cerror.WrapError(cerror.ErrRedoFileOp, err)
 			}
 
+			log.Debug("unmarshal redo meta", zap.Int("size", len(fileData)))
 			meta := common.LogMeta{}
 			_, err = meta.UnmarshalMsg(fileData)
 			if err != nil {
