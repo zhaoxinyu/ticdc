@@ -456,6 +456,7 @@ func (w *Writer) GC(checkPointTs uint64) error {
 		go func() {
 			var errs error
 			for _, f := range remove {
+				log.Info("delete s3 file", zap.String("name", f.Name()))
 				err := w.storage.DeleteFile(context.Background(), f.Name())
 				errs = multierr.Append(errs, err)
 			}
@@ -529,6 +530,7 @@ func (w *Writer) flushAll() error {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultS3Timeout)
 	defer cancel()
 
+	log.Info("write s3 file", zap.String("name", w.file.Name()))
 	err = w.writeToS3(ctx, w.file.Name())
 	w.metricFlushAllDuration.Observe(time.Since(start).Seconds())
 
@@ -540,7 +542,12 @@ func (w *Writer) Flush() error {
 	w.Lock()
 	defer w.Unlock()
 
-	return w.flushAll()
+	err := w.flushAll()
+	if err != nil {
+		log.Error("failed to Flush()", zap.String("name", w.ongoingFilePath), zap.Error(err))
+	}
+
+	return nil
 }
 
 func (w *Writer) flush() error {

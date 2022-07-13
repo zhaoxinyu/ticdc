@@ -498,8 +498,11 @@ func (l *LogWriter) Close() error {
 
 // flush flushes all the buffered data to the disk.
 func (l *LogWriter) flush(rtsMap map[model.TableID]model.Ts) error {
+	log.Info("flush ddlWriter")
 	err1 := l.ddlWriter.Flush()
+	log.Info("flush rowWriter")
 	err2 := l.rowWriter.Flush()
+	log.Info("flush logMeta")
 	err3 := l.flushLogMeta(0, rtsMap)
 
 	err := multierr.Append(err1, err2)
