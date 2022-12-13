@@ -79,6 +79,7 @@ func (b *batchDecoder) HasNext() (model.MessageType, bool, error) {
 	err := b.parser.ReadRow()
 	if err != nil {
 		b.closed = true
+		b.parser.Close()
 		if errors.Cause(err) == io.EOF {
 			return model.MessageTypeUnknown, false, nil
 		}
@@ -86,6 +87,7 @@ func (b *batchDecoder) HasNext() (model.MessageType, bool, error) {
 	}
 
 	row := b.parser.LastRow()
+	defer b.parser.RecycleRow(row)
 	if err = b.msg.decode(row.Row); err != nil {
 		return model.MessageTypeUnknown, false, errors.Trace(err)
 	}

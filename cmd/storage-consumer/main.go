@@ -47,7 +47,10 @@ import (
 	psink "github.com/pingcap/tiflow/pkg/sink"
 	"github.com/pingcap/tiflow/pkg/sink/cloudstorage"
 	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
+
+const defaultSendRatePerTable = 1024.0
 
 var (
 	upstreamURIStr   string
@@ -228,6 +231,7 @@ type consumer struct {
 	// tableTsMap maintains a map of <TableID, max commit ts>
 	tableTsMap       map[model.TableID]uint64
 	tableIDGenerator *fakeTableIDGenerator
+	limiter          *rate.Limiter
 }
 
 func newConsumer(ctx context.Context) (*consumer, error) {
@@ -298,6 +302,7 @@ func newConsumer(ctx context.Context) (*consumer, error) {
 		tableIDGenerator: &fakeTableIDGenerator{
 			tableIDs: make(map[string]int64),
 		},
+		limiter: rate.NewLimiter(defaultSendRatePerTable, 100),
 	}, nil
 }
 
@@ -447,6 +452,13 @@ func (c *consumer) emitDMLEvents(ctx context.Context, tableID int64, pathKey dml
 				continue
 			}
 			row.Table.TableID = tableID
+			err = c.limiter.Wait(ctx)
+			if err != nil {
+				if errors.Cause(err) == context.Canceled {
+					return nil
+				}
+				return errors.Trace(err)
+			}
 			events = append(events, row)
 		}
 	}
